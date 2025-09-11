@@ -1,0 +1,31 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Data / outputs
+*.csv
+*.json
+*.tsv
+*.log
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# models
+models/
+.bin
