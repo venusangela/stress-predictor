@@ -28,4 +28,7 @@ Thumbs.db
 
 # models
 models/
-.bin
+*.bin
+
+outputs/
+*.png

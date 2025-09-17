@@ -1,8 +1,12 @@
+import os
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from transformers.models.bert.configuration_bert import BertConfig
-import math
-from collections import Counter
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
 from transformers import logging
 logging.set_verbosity_error()
@@ -13,66 +17,26 @@ def get_device(force_cpu=False):
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_model(model_name, tokenizer_name, device):
-    tokenizer = AutoTokenizer.from_pretrained(f"models/{tokenizer_name}", do_lower_case=False)
-    config = BertConfig.from_pretrained(f"models/{model_name}")
-    model = AutoModelForSequenceClassification.from_pretrained(f"models/{model_name}", config=config)
+    tokenizer = AutoTokenizer.from_pretrained(f"igemugm/{tokenizer_name}-stress-predictor", do_lower_case=False)
+    config = BertConfig.from_pretrained(f"igemugm/{model_name}-stress-predictor")
+    model = AutoModelForSequenceClassification.from_pretrained(f"igemugm/{model_name}-stress-predictor", config=config)
     model.to(device)
     model.eval()
     return tokenizer, model
 
-def slice_sequence(seq, window_size=200):
-    seq_len = len(seq)
-    n_windows = math.ceil(seq_len / window_size)
-
-    if seq_len % window_size == 0:
-        stride = window_size
-    else:
-        stride = (seq_len - window_size) // (n_windows - 1)
-
-    slices = []
-    for i in range(n_windows):
-        start = i * stride
-        end = start + window_size
-        if end > seq_len:
-            end = seq_len
-            start = end - window_size
-
-        slices.append(
-            {
-                "sequence": seq[start:end],
-                "start": start,
-                "end": end
-            }
-        )
-
-    return slices
-
-def promoter_stress_classification(model, tokenizer, sequence, device, max_length=200):
-    seqs_info = slice_sequence(sequence, max_length)
-    seqs = [s["sequence"] for s in seqs_info]
-    inputs = tokenizer(seqs, return_tensors="pt", truncation=True, padding=True, max_length=max_length)
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-
-    with torch.no_grad():
-        outputs = model(**inputs)
-        pred = torch.argmax(outputs.logits, dim=-1).cpu().tolist()
-    
-    pred_score = sum(pred) / len(pred)
-    final_label = "stress promoter" if pred_score > 0.5 else "non-stress promoter"
-    result = {
-        "slices": [
-            {"start_index": s["start"], "end_index": s["end"], "sequence": s["sequence"], "pred": pred[i]}
-            for i,s in enumerate(seqs_info)
-        ],
-        "pred_score": pred_score,
-        "final_label": final_label
-    }
-    return result
-
-def region_stress_classification(model, tokenizer, sequence, device, window_size=200, stride=1):
+def region_stress_classification(
+    model, tokenizer, sequence, device, 
+    window_size=200, stride=100, save_path="visualization.png"
+): 
     seq_len = len(sequence)
+    if seq_len != 1000 and seq_len != 2000:
+        raise ValueError("Sequence length must be either 1000 or 2000")
+    
     pos_votes = [[] for _ in range(seq_len)]
+    results = {}
+    all_probs = []
 
+    window_id = 1
     for start in range(0, seq_len - window_size + 1, stride):
         end = start + window_size
         subseq = sequence[start:end]
@@ -87,26 +51,87 @@ def region_stress_classification(model, tokenizer, sequence, device, window_size
 
         with torch.no_grad():
             outputs = model(**inputs).logits
-            pred = torch.argmax(outputs, dim=-1).item()
+            probs = torch.softmax(outputs, dim=-1)[0].cpu().tolist()
+            pred = int(torch.argmax(outputs, dim=-1)[0].item())
 
+        results[str(window_id)] = {
+            "sequence": subseq,
+            "label_seq": str(pred),
+            "score": probs[pred]
+        }
+        all_probs.append(probs[pred])
+
+        # update votes per posisi
         for i in range(start, end):
             pos_votes[i].append(pred)
 
-    final_pos_labels = []
+        window_id += 1
+
+    results["final_score"] = sum(all_probs) / len(all_probs)
+
+    # === VISUALISASI ===
+    colors = []
     for votes in pos_votes:
         if len(votes) == 0:
-            final_pos_labels.append("0")
+            colors.append("white")
+        elif all(v == 1 for v in votes):
+            colors.append("green")
+        elif all(v == 0 for v in votes):
+            colors.append("red")
         else:
-            c = Counter(votes)
-            label = "1" if c[1] >= c[0] else "0"
-            final_pos_labels.append(label)
+            colors.append("gray")
 
-    final_label_seq = "".join(final_pos_labels)
+    plt.figure(figsize=(15, 2))
+    plt.scatter(range(seq_len), [1]*seq_len, c=colors, s=30, marker="s")
+    plt.title("Region Stress Classification Visualization")
+    plt.yticks([])
+    plt.xlabel("Sequence Position")
 
-    result = {
-        "promoter_sequence": sequence,
-        "final_label_seq": final_label_seq
-    }
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(100))
+    ax.grid(axis="x", linestyle="--", alpha=0.5)
+    
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close()
 
-    return result
+    return results
 
+def promoter_stress_classification(
+    model, tokenizer, sequence, device, 
+    slice_size=1000, stride=200, window_size=200, output_dir="outputs"
+):
+    seq_len = len(sequence)
+    if seq_len < 5000 or seq_len > 10000:
+        raise ValueError("Sequence length must be between 5000 - 10000")
+    elif seq_len % 1000 != 0:
+        raise ValueError("Sequence length must be divisible by 1000")
+
+    if slice_size == 1000:
+        valid_strides = [100, 200, 500]
+    elif slice_size == 2000:
+        valid_strides = [100, 200, 400, 500]
+    else:
+        raise ValueError("Slice size must be either 1000 or 2000")
+
+    if stride not in valid_strides:
+        raise ValueError(f"Stride {stride} is not valid for slice {slice_size}. "
+                         f"Valid: {valid_strides}")
+
+    os.makedirs(output_dir, exist_ok=True)
+    results = {}
+
+    num_slices = (len(sequence) + slice_size - 1) // slice_size
+
+    for slice_id in range(num_slices):
+        start = slice_id * slice_size
+        end = min((slice_id + 1) * slice_size, len(sequence))
+        subseq = sequence[start:end]
+
+        save_path = os.path.join(output_dir, f"slice{slice_id+1}_stride{stride}.png")
+        res = region_stress_classification(
+            model, tokenizer, subseq, device, 
+            window_size=window_size, stride=stride, save_path=save_path
+        )
+        results[f"slice_{slice_id+1}"] = res
+
+    return results

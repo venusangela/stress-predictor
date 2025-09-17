@@ -15,7 +15,8 @@ requires-python = ">=3.8"
 dependencies = [
     "transformers",
     "torch",
-    "biopython"
+    "biopython",
+    "matplotlib"
 ]
 
 [tool.setuptools]

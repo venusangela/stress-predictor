@@ -16,7 +16,7 @@ def main():
 
     # Process
     if args.pr:
-        result = promoter_stress_classification(model, tokenizer, sequence, device, max_length=args.max_length)
+        result = promoter_stress_classification(model, tokenizer, sequence, device)
     elif args.rg:
         result = region_stress_classification(model, tokenizer, sequence, device)
 
